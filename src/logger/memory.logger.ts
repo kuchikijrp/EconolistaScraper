@@ -1,21 +1,35 @@
 import { ConsoleLogger, Injectable } from '@nestjs/common';
-
-export const IN_MEMORY_LOGS: Array<{ timestamp: string; level: string; context: string; message: any }> = [];
-const MAX_LOGS = 20;
+import Redis from 'ioredis';
 
 @Injectable()
 export class MemoryLogger extends ConsoleLogger {
+  private redis: Redis;
+
+  constructor() {
+    super();
+    this.redis = new Redis({
+      host: process.env.UPSTASH_REDIS_HOST,
+      port: Number(process.env.UPSTASH_REDIS_PORT || 6379),
+      username: process.env.UPSTASH_REDIS_USERNAME,
+      password: process.env.UPSTASH_REDIS_PASSWORD,
+      tls: {},
+    });
+  }
+
   private addLog(level: string, message: any, context?: string) {
-    IN_MEMORY_LOGS.unshift({
+    const logEntry = {
       timestamp: new Date().toISOString(),
       level,
       context: context || this.context || '',
       message,
-    });
-    
-    if (IN_MEMORY_LOGS.length > MAX_LOGS) {
-      IN_MEMORY_LOGS.pop();
-    }
+    };
+
+    // Salva no Redis (fire-and-forget) para que todas as instâncias da Vercel compartilhem
+    this.redis.lpush('econolista:dashboard_logs', JSON.stringify(logEntry))
+      .then(() => {
+        this.redis.ltrim('econolista:dashboard_logs', 0, 49).catch(() => {});
+      })
+      .catch(() => {});
   }
 
   log(message: any, context?: string) {

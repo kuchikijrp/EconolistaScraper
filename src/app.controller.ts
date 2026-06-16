@@ -1,6 +1,5 @@
 import { Controller, Get, Post, Body, UnauthorizedException, Header } from '@nestjs/common';
 import { AppService } from './app.service';
-import { IN_MEMORY_LOGS } from './logger/memory.logger';
 
 @Controller()
 export class AppController {
@@ -8,7 +7,9 @@ export class AppController {
 
   @Get()
   @Header('Content-Type', 'text/html')
-  getDashboard() {
+  async getDashboard() {
+    const dashboardLogs = await this.appService.getDashboardLogs();
+
     let html = `
       <!DOCTYPE html>
       <html lang="pt-BR">
@@ -170,12 +171,12 @@ export class AppController {
               <tbody>
     `;
 
-    if (IN_MEMORY_LOGS.length === 0) {
+    if (dashboardLogs.length === 0) {
       html += `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 3rem;">Nenhum log registrado ainda...</td></tr>`;
     }
 
-    for (const log of IN_MEMORY_LOGS) {
-      const time = new Date(log.timestamp).toLocaleString('pt-BR', { hour12: false });
+    for (const log of dashboardLogs) {
+      const time = new Date(log.timestamp).toLocaleTimeString('pt-BR', { hour12: false });
 
       let msgHtml = '';
       if (typeof log.message === 'object') {

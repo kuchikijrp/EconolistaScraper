@@ -53,4 +53,21 @@ export class AppService {
       await redis.quit();
     }
   }
+
+  async getDashboardLogs(): Promise<any[]> {
+    const redis = new Redis({
+      host: process.env.UPSTASH_REDIS_HOST,
+      port: Number(process.env.UPSTASH_REDIS_PORT || 6379),
+      username: process.env.UPSTASH_REDIS_USERNAME,
+      password: process.env.UPSTASH_REDIS_PASSWORD,
+      tls: {},
+    });
+
+    try {
+      const logsStr = await redis.lrange('econolista:dashboard_logs', 0, 49);
+      return logsStr.map((l) => JSON.parse(l));
+    } finally {
+      await redis.quit();
+    }
+  }
 }
