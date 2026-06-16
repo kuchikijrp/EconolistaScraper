@@ -1,0 +1,192 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum STATUSTYPE {
+  ATIVO
+  INATIVO
+}
+
+// 1. Supermercados de Goiânia
+model Market {
+  id          String       @id @default(uuid())
+  cnpj        String       @unique
+  name        String
+  fantasyName String?
+  urlLogo     String?
+  status      STATUSTYPE   @default(ATIVO)
+  prices      PriceEntry[]
+  address     Address[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+model Address {
+  id       String @id @default(uuid())
+  marketId String @unique
+
+  cep         String?
+  logradouro  String?
+  complemento String?
+  numero      String?
+  bairro      String?
+  cidade      String?
+  uf          String?
+  estado      String?
+  regiao      String?
+  ibge        String?
+  lat         Float?
+  lng         Float?
+  status      STATUSTYPE @default(ATIVO)
+
+  market Market @relation(fields: [marketId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+// 2. Catálogo Oficial (Limpado via Admin)
+model Product {
+  id         String     @id @default(uuid())
+  ean        String?    @unique // O código universal que você solicitou
+  name       String
+  unit       String? // ex: 5kg, un, lt
+  brand      String?
+  category   String?
+  family     String?
+  urlImage   String?
+  isofficial Boolean    @default(false) // Para diferenciar produtos mapeados do catálogo oficial vs. itens "novos" capturados via scraper
+  status     STATUSTYPE @default(ATIVO)
+
+  prices      PriceEntry[]
+  rawProducts ProductRaw[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+// 3. Nomes "sujos" capturados via Scraper da SEFAZ-GO
+model ProductRaw {
+  id        String   @id @default(uuid())
+  rawName   String   @unique // ex: "ARZ CRISTAL T1 5KG"
+  product   Product? @relation(fields: [productId], references: [id])
+  productId String?
+
+  priceEntries PriceEntry[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+// 4. Histórico de Preços (O Coração do App)
+model PriceEntry {
+  id        String   @id @default(uuid())
+  price     Decimal  @db.Decimal(10, 2)
+  priceUnit Decimal? @db.Decimal(10, 2)
+  quantity  Float    @default(1)
+  descount  Decimal? @db.Decimal(10, 2)
+  unit      String? // UN, KG, LT
+  issueDate DateTime
+
+  // Relacionamentos Estruturais
+  receiptId    String // FK para Receipts (que já é única)
+  marketId     String // Denormalização para facilitar busca de preços por mercado
+  productId    String? // FK para o Catálogo (nulo se for item novo/não mapeado)
+  productRawId String // FK para o Nome Sujo (original da nota)
+  userId       String // Quem enviou (para gamificação)
+
+  // Relações
+  receipt    Receipts   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  market     Market     @relation(fields: [marketId], references: [id])
+  product    Product?   @relation(fields: [productId], references: [id])
+  productRaw ProductRaw @relation(fields: [productRawId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  // Índices para o App ser rápido (Consultas de "Menor Preço")
+  @@index([productId, price])
+  @@index([receiptId]) // Crucial para deletar/atualizar itens da nota rapidamente]
+  @@index([issueDate]) // Para análises temporais e gráficos
+}
+
+//5. Usuarios
+model User {
+  id                   String     @id
+  email                String     @unique
+  stripeCustomerId     String?    @unique
+  stripeSubscriptionId String?
+  planStatus           String     @default("FREE")
+  perfil               String     @default("USER")
+  name                 String?
+  points               Int        @default(0)
+  totalXp              Int        @default(0)
+  level                Int        @default(1)
+  status               STATUSTYPE @default(ATIVO)
+
+  prices          PriceEntry[]
+  receipts        Receipts[]
+  econoPointsLogs PointsLog[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+enum TransactionType {
+  EARN // Ganho de pontos (Gera XP + EP)
+  SPEND // Gasto de pontos (Diminui EP, não afeta XP)
+  BONUS // Ganhos extras (Ex: Promoções, indicações)
+}
+
+model PointsLog {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Detalhes da transação
+  amount      Int // Valor da transação (sempre positivo)
+  type        TransactionType
+  description String // Ex: "Envio de NF-e", "Resgate Cupom"
+
+  // Metadados para auditoria e inteligência
+  receiptId  String? // Opcional: Link com a nota que gerou o ponto
+  actionType String? // Ex: "SCAN_NF", "DATA_CLEANUP", "REDEEM_PREMIUM"
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum ReceiptStatus {
+  PENDING // Nota recebida, aguardando o scraper
+  PROCESSING // Scraper está trabalhando nela
+  COMPLETED // Dados extraídos e preços atualizados
+  ERROR // Link inválido ou erro na SEFAZ-GO
+}
+
+model Receipts {
+  id         String        @id @default(uuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id])
+  url_sefaz  String        @unique
+  access_key String?
+  status     ReceiptStatus @default(PENDING)
+
+  priceEntries PriceEntry[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
