@@ -1,8 +1,11 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Post, Body, UnauthorizedException, Header } from '@nestjs/common';
+import { AppService } from './app.service';
 import { IN_MEMORY_LOGS } from './logger/memory.logger';
 
 @Controller()
 export class AppController {
+  constructor(private readonly appService: AppService) { }
+
   @Get()
   @Header('Content-Type', 'text/html')
   getDashboard() {
@@ -13,7 +16,6 @@ export class AppController {
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>EconoLista - Live Console</title>
-          <meta http-equiv="refresh" content="5"> <!-- Auto-Refresh a cada 5 segundos -->
           <style>
             :root {
               --bg: #0f172a;
@@ -62,6 +64,24 @@ export class AppController {
               50% { transform: scale(1.1); opacity: 1; }
               100% { transform: scale(0.95); opacity: 0.8; }
             }
+            .btn-reprocess {
+              background: var(--warn);
+              color: #0f172a;
+              border: none;
+              padding: 0.6rem 1.2rem;
+              border-radius: 6px;
+              font-weight: 700;
+              cursor: pointer;
+              transition: all 0.2s;
+              font-family: inherit;
+              display: flex;
+              align-items: center;
+              gap: 0.5rem;
+            }
+            .btn-reprocess:hover {
+              filter: brightness(1.1);
+              transform: translateY(-1px);
+            }
             .terminal {
               background: var(--surface);
               border-radius: 12px;
@@ -102,12 +122,34 @@ export class AppController {
             .context { color: var(--text-muted); font-size: 0.8rem; }
             .message { color: #e2e8f0; }
             .timestamp { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
+            
+            .json-block {
+              background: rgba(0, 0, 0, 0.25);
+              padding: 0.75rem;
+              border-radius: 6px;
+              margin: 0.25rem 0;
+              font-family: 'JetBrains Mono', 'Courier New', Courier, monospace;
+              font-size: 0.8rem;
+              white-space: pre-wrap;
+              word-break: break-all;
+              color: #a7f3d0;
+              max-height: 150px;
+              overflow-y: auto;
+              border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            .json-block::-webkit-scrollbar { width: 6px; }
+            .json-block::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
           </style>
         </head>
         <body>
           <div class="header">
-            <h1><div class="pulse"></div> Live Console</h1>
-            <span style="color: var(--text-muted); font-size: 0.9rem;">Auto-refreshing every 5s</span>
+            <div>
+              <h1><div class="pulse"></div> Live Console</h1>
+              <span style="color: var(--text-muted); font-size: 0.9rem;">Auto-refreshing every 5s</span>
+            </div>
+            <button onclick="reprocessDlq()" class="btn-reprocess">
+              🔄 Reprocessar DLQ
+            </button>
           </div>
           
           <div class="terminal">
@@ -133,17 +175,21 @@ export class AppController {
     }
 
     for (const log of IN_MEMORY_LOGS) {
-      const time = new Date(log.timestamp).toLocaleString('pt-BR');
+      const time = new Date(log.timestamp).toLocaleString('pt-BR', { hour12: false });
 
-      // Converte objetos/erros para string de forma segura
-      let msgStr = typeof log.message === 'object' ? JSON.stringify(log.message) : String(log.message);
+      let msgHtml = '';
+      if (typeof log.message === 'object') {
+        msgHtml = `<pre class="json-block">${JSON.stringify(log.message, null, 2)}</pre>`;
+      } else {
+        msgHtml = String(log.message);
+      }
 
       html += `
         <tr>
           <td class="timestamp">${time}</td>
           <td><span class="badge level-${log.level}">${log.level}</span></td>
           <td class="context">[${log.context}]</td>
-          <td class="message">${msgStr}</td>
+          <td class="message">${msgHtml}</td>
         </tr>
       `;
     }
@@ -152,10 +198,61 @@ export class AppController {
               </tbody>
             </table>
           </div>
+
+          <script>
+            let isPromptOpen = false;
+            
+            setTimeout(() => {
+              if (!isPromptOpen) {
+                window.location.reload();
+              }
+            }, 5000);
+
+            async function reprocessDlq() {
+              isPromptOpen = true;
+              const pwd = prompt("Digite a senha de administrador (padrão: admin123):");
+              isPromptOpen = false;
+              
+              if (!pwd) {
+                setTimeout(() => window.location.reload(), 5000);
+                return;
+              }
+
+              try {
+                const res = await fetch('/reprocess-dlq', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ password: pwd })
+                });
+                
+                const data = await res.json();
+                if (res.ok) {
+                  alert("✅ Sucesso! " + data.count + " notas reenviadas para a fila principal.");
+                } else {
+                  alert("❌ Erro: " + data.message);
+                }
+              } catch (e) {
+                alert("Erro ao conectar ao servidor.");
+              }
+              window.location.reload();
+            }
+          </script>
         </body>
       </html>
     `;
 
     return html;
+  }
+
+  @Post('reprocess-dlq')
+  async reprocessDlqEndpoint(@Body() body: { password?: string }) {
+    const expectedPassword = process.env.ADMIN_PASSWORD || 'admin123';
+
+    if (body.password !== expectedPassword) {
+      throw new UnauthorizedException('Senha incorreta');
+    }
+
+    const result = await this.appService.reprocessDeadLetters();
+    return { success: true, count: result.count };
   }
 }
